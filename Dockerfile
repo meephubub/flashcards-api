@@ -24,4 +24,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV BROWSER_EXECUTABLE_PATH="/usr/bin/google-chrome"
 
 # Run the API
-CMD ["python", "-m", "g4f.api"]
+CMD ["python", "main.py"]
