@@ -45,11 +45,12 @@ curl -X POST "http://localhost:1337/v1/agent/run" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key" \
   -d '{
-    "input": "What is the current weather in New York?",
+    "input": "What is 2 + 2?",
     "config": {
       "agent_type": "zero-shot-react-description",
-      "tools": ["duckduckgo_search"],
-      "verbose": true
+      "tools": [],
+      "verbose": true,
+      "model": "gpt-4o"
     }
   }'
 ```
@@ -69,7 +70,8 @@ curl -X POST "http://localhost:1337/v1/agent/run" \
         "memory_type": "conversation_buffer",
         "memory_key": "chat_history"
       },
-      "tools": ["duckduckgo_search", "wikipedia"]
+      "tools": ["duckduckgo_search"],
+      "model": "gpt-4o"
     }
   }'
 ```
@@ -83,8 +85,9 @@ curl -X POST "http://localhost:1337/api/gemini/agent/run" \
     "input": "Write a Python function to calculate fibonacci numbers",
     "config": {
       "agent_type": "openai-functions",
-      "tools": ["python_repl"],
-      "max_iterations": 5
+      "tools": ["duckduckgo_search"],
+      "max_iterations": 3,
+      "model": "gpt-4o"
     }
   }'
 ```
@@ -182,21 +185,11 @@ curl -X POST "http://localhost:1337/v1/agent/memory" \
 
 ### Search Tools
 - `duckduckgo_search`: Search the web for current information
-- `wikipedia`: Search Wikipedia for information
-- `youtube_search`: Search YouTube for videos
-- `arxiv_search`: Search arXiv for academic papers
-- `pubmed_search`: Search PubMed for medical research
-
-### Programming Tools
-- `python_repl`: Execute Python code
-- `shell`: Execute shell commands
-
-### Web Tools
-- `web_search`: Search the web using GET requests
-- `web_post`: Make POST requests to web APIs
 
 ### Utility Tools
 - `human_input`: Ask for human input when needed
+
+*Note: For testing purposes, only essential tools are enabled. Additional tools can be added as needed.*
 
 ## Agent Types
 
@@ -309,10 +302,11 @@ client = AgentClient(api_key="your-api-key")
 
 # Run a simple agent
 result = client.run_agent(
-    "What is the weather like today?",
+    "What is 2 + 2?",
     config={
         "agent_type": "zero-shot-react-description",
-        "tools": ["duckduckgo_search"]
+        "tools": [],
+        "model": "gpt-4o"
     }
 )
 print(result["output"])

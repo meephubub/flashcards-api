@@ -26,7 +26,6 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     xdg-utils \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Google Chrome repository and install Chrome
@@ -75,7 +74,6 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     xdg-utils \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Google Chrome repository and install Chrome

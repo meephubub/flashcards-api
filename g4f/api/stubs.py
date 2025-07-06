@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
-from typing import Union, Optional, List
+from typing import Union, Optional
 
 from ..typing import Messages
 
@@ -132,75 +132,6 @@ class AudioSpeechConfig(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     voice: Optional[str] = None
+    instrcutions: str = "Speech this text in a natural way."
     response_format: Optional[str] = None
     language: Optional[str] = None
-    instrcutions: Optional[str] = "Generate speech from the following text:"
-
-class AgentConfig(BaseModel):
-    """Configuration for LangChain agent"""
-    model: Optional[str] = None
-    provider: Optional[str] = None
-    api_key: Optional[str] = None
-    tools: Optional[List[str]] = None
-    agent_type: Optional[str] = "zero-shot-react-description"
-    verbose: Optional[bool] = False
-    max_iterations: Optional[int] = 10
-    early_stopping_method: Optional[str] = "generate"
-    return_intermediate_steps: Optional[bool] = False
-    handle_parsing_errors: Optional[bool] = True
-    memory: Optional[bool] = False
-    memory_key: Optional[str] = "chat_history"
-    input_key: Optional[str] = "input"
-    output_key: Optional[str] = "output"
-
-class AgentRequest(BaseModel):
-    """Request model for agent API"""
-    input: str
-    config: Optional[AgentConfig] = None
-    conversation_id: Optional[str] = None
-
-class AgentResponse(BaseModel):
-    """Response model for agent API"""
-    output: str
-    intermediate_steps: Optional[List[dict]] = None
-    conversation_id: Optional[str] = None
-    model: Optional[str] = None
-    provider: Optional[str] = None
-    agent_type: Optional[str] = None
-    execution_time: Optional[float] = None
-
-class ToolConfig(BaseModel):
-    """Configuration for individual tools"""
-    name: str
-    description: Optional[str] = None
-    enabled: Optional[bool] = True
-    parameters: Optional[dict] = None
-
-class AgentToolsResponse(BaseModel):
-    """Response model for available tools"""
-    tools: List[ToolConfig]
-    total: int
-
-class AgentMemoryConfig(BaseModel):
-    """Configuration for agent memory"""
-    memory_type: Optional[str] = "conversation_buffer"
-    max_token_limit: Optional[int] = 2000
-    return_messages: Optional[bool] = True
-    input_key: Optional[str] = "input"
-    output_key: Optional[str] = "output"
-    memory_key: Optional[str] = "chat_history"
-
-class AgentMemoryRequest(BaseModel):
-    """Request model for memory operations"""
-    conversation_id: str
-    action: str  # "get", "clear", "add"
-    input: Optional[str] = None
-    output: Optional[str] = None
-
-class AgentMemoryResponse(BaseModel):
-    """Response model for memory operations"""
-    conversation_id: str
-    action: str
-    success: bool
-    message: str
-    memory_content: Optional[List[dict]] = None

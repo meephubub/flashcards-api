@@ -1,4 +1,3 @@
-g4f
 requests
 pycryptodome
 curl_cffi>=0.6.2
@@ -22,8 +21,7 @@ python-multipart
 markitdown[all]
 a2wsgi
 httpx
-
-langchain==0.3.26
+langchain
 langchain-community
 langchain-core
 langchain-openai

@@ -68,12 +68,13 @@ class AgentAPITester:
         """Test agent with search tool"""
         print("\nTesting POST /v1/agent/run (with search)...")
         data = {
-            "input": "What is the current time?",
+            "input": "What is 2 + 2?",
             "config": {
                 "agent_type": "zero-shot-react-description",
                 "tools": ["duckduckgo_search"],
                 "verbose": False,
-                "max_iterations": 5
+                "max_iterations": 3,
+                "model": "gpt-4o"
             }
         }
         

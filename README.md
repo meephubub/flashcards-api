@@ -106,10 +106,11 @@ curl -X POST "http://localhost:1337/v1/agent/run" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key" \
   -d '{
-    "input": "What is the weather like today?",
+    "input": "What is 2 + 2?",
     "config": {
       "agent_type": "zero-shot-react-description",
-      "tools": ["duckduckgo_search"]
+      "tools": [],
+      "model": "gpt-4o"
     }
   }'
 ```
@@ -143,21 +144,11 @@ curl -X POST "http://localhost:1337/v1/agent/run" \
 
 ### Search Tools
 - `duckduckgo_search` - Web search
-- `wikipedia` - Wikipedia search
-- `youtube_search` - YouTube search
-- `arxiv_search` - Academic papers
-- `pubmed_search` - Medical research
-
-### Programming Tools
-- `python_repl` - Execute Python code
-- `shell` - Execute shell commands
-
-### Web Tools
-- `web_search` - GET requests
-- `web_post` - POST requests
 
 ### Utility Tools
 - `human_input` - Ask for human input
+
+*Note: For testing purposes, only essential tools are enabled.*
 
 ## Configuration
 
@@ -189,34 +180,35 @@ python test_agent_api.py
 
 ## Examples
 
-### Research Agent
+### Simple Agent
 ```python
 import requests
 
 response = requests.post("http://localhost:1337/v1/agent/run", 
   headers={"Authorization": "Bearer your-key"},
   json={
-    "input": "Research quantum computing developments",
+    "input": "What is 2 + 2?",
     "config": {
-      "agent_type": "structured-chat-zero-shot-react",
-      "tools": ["duckduckgo_search", "wikipedia", "arxiv_search"],
+      "agent_type": "zero-shot-react-description",
+      "tools": [],
       "verbose": True,
-      "max_iterations": 15
+      "model": "gpt-4o"
     }
   }
 )
 ```
 
-### Programming Assistant
+### Agent with Search
 ```python
 response = requests.post("http://localhost:1337/v1/agent/run",
   headers={"Authorization": "Bearer your-key"},
   json={
-    "input": "Create a web scraper in Python",
+    "input": "What is the current time?",
     "config": {
       "agent_type": "zero-shot-react-description",
-      "tools": ["python_repl", "web_search"],
-      "verbose": True
+      "tools": ["duckduckgo_search"],
+      "verbose": True,
+      "model": "gpt-4o"
     }
   }
 )

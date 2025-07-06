@@ -25,14 +25,17 @@ from starlette.status import (
     HTTP_401_UNAUTHORIZED,
     HTTP_403_FORBIDDEN,
     HTTP_500_INTERNAL_SERVER_ERROR,
-    HTTP_503_SERVICE_UNAVAILABLE,
 )
 from starlette.staticfiles import NotModifiedResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse
 from starlette.background import BackgroundTask
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from langchain.agents import initialize_agent, AgentType
+from langchain.tools import Tool
+from langchain_community.chat_models import ChatOpenAI
 try:
     from a2wsgi import WSGIMiddleware
     has_a2wsgi = True
@@ -59,7 +62,7 @@ except ImportError:
 
 import g4f
 import g4f.debug
-from g4f.client import AsyncClient, ChatCompletion, ImagesResponse, ClientResponse
+from g4f.client import AsyncClient, ChatCompletion, ImagesResponse, ClientResponse, Client
 from g4f.providers.response import BaseConversation, JsonConversation
 from g4f.client.helper import filter_none
 from g4f.image import EXTENSIONS_MAP, is_data_an_media, process_image
@@ -77,18 +80,9 @@ from .stubs import (
     ErrorResponseModel, ProviderResponseDetailModel,
     FileResponseModel,
     TranscriptionResponseModel, AudioSpeechConfig,
-    ResponsesConfig, AgentConfig, AgentRequest, AgentResponse,
-    ToolConfig, AgentToolsResponse, AgentMemoryConfig,
-    AgentMemoryRequest, AgentMemoryResponse
+    ResponsesConfig
 )
 from g4f import debug
-try:
-    from .agent import agent_manager
-    AGENT_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Agent API not available due to import error: {e}")
-    agent_manager = None
-    AGENT_AVAILABLE = False
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -275,9 +269,7 @@ class Api:
         async def read_root_v1():
             return HTMLResponse('g4f API: Go to '
                                 '<a href="/v1/models">models</a>, '
-                                '<a href="/v1/chat/completions">chat/completions</a>, '
-                                '<a href="/v1/agent/run">agent/run</a>, '
-                                '<a href="/v1/agent/tools">agent/tools</a>, or '
+                                '<a href="/v1/chat/completions">chat/completions</a>, or '
                                 '<a href="/v1/media/generate">media/generate</a> <br><br>'
                                 'Open Swagger UI at: '
                                 '<a href="/docs">/docs</a>')
@@ -544,7 +536,7 @@ class Api:
                         config['image'] = image_bytes
                 
                 response = await self.client.images.generate(
-                    **config.dict(exclude_none=True),
+                    **kwargs,
                 )
                 for image in response.data:
                     if hasattr(image, "url") and image.url.startswith("/"):
@@ -710,171 +702,6 @@ class Api:
                 read_cookie_files()
             return response_data
 
-        # Agent API endpoints
-        @self.app.get("/v1/agent/tools", responses={
-            HTTP_200_OK: {"model": AgentToolsResponse},
-        })
-        async def get_agent_tools():
-            """Get available tools for agents"""
-            if not AGENT_AVAILABLE:
-                return ErrorResponse.from_message("Agent API is not available", HTTP_503_SERVICE_UNAVAILABLE)
-            tools = agent_manager.get_available_tools()
-            tool_configs = [
-                ToolConfig(
-                    name=tool.name,
-                    description=tool.description,
-                    enabled=True
-                ) for tool in tools
-            ]
-            return AgentToolsResponse(tools=tool_configs, total=len(tool_configs))
-
-        @self.app.post("/v1/agent/run", responses={
-            HTTP_200_OK: {"model": AgentResponse},
-            HTTP_401_UNAUTHORIZED: {"model": ErrorResponseModel},
-            HTTP_404_NOT_FOUND: {"model": ErrorResponseModel},
-            HTTP_422_UNPROCESSABLE_ENTITY: {"model": ErrorResponseModel},
-            HTTP_500_INTERNAL_SERVER_ERROR: {"model": ErrorResponseModel},
-            HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponseModel},
-        })
-        async def run_agent(
-            request: AgentRequest,
-            credentials: Annotated[HTTPAuthorizationCredentials, Depends(Api.security)] = None,
-            provider: str = None
-        ):
-            """Run a LangChain agent with the given input"""
-            if not AGENT_AVAILABLE:
-                return ErrorResponse.from_message("Agent API is not available", HTTP_503_SERVICE_UNAVAILABLE)
-            
-            try:
-                # Prepare configuration
-                config = {}
-                if request.config:
-                    config = request.config.dict(exclude_none=True)
-                
-                # Set default provider if not specified
-                if config.get("provider") is None:
-                    config["provider"] = AppConfig.provider if provider is None else provider
-                
-                # Set default model if not specified
-                if config.get("model") is None:
-                    config["model"] = AppConfig.model
-                
-                # Set API key if provided
-                if config.get("api_key") is None and credentials is not None and credentials.credentials != "secret":
-                    config["api_key"] = credentials.credentials
-                
-                # Run the agent
-                result = await agent_manager.run_agent(
-                    input_text=request.input,
-                    conversation_id=request.conversation_id,
-                    config=config
-                )
-                
-                return AgentResponse(**result)
-                
-            except (ModelNotFoundError, ProviderNotFoundError) as e:
-                logger.exception(e)
-                return ErrorResponse.from_exception(e, None, HTTP_404_NOT_FOUND)
-            except (MissingAuthError, NoValidHarFileError) as e:
-                logger.exception(e)
-                return ErrorResponse.from_exception(e, None, HTTP_401_UNAUTHORIZED)
-            except Exception as e:
-                logger.exception(e)
-                return ErrorResponse.from_exception(e, None, HTTP_500_INTERNAL_SERVER_ERROR)
-
-        @self.app.post("/api/{provider}/agent/run", responses={
-            HTTP_200_OK: {"model": AgentResponse},
-            HTTP_401_UNAUTHORIZED: {"model": ErrorResponseModel},
-            HTTP_404_NOT_FOUND: {"model": ErrorResponseModel},
-            HTTP_422_UNPROCESSABLE_ENTITY: {"model": ErrorResponseModel},
-            HTTP_500_INTERNAL_SERVER_ERROR: {"model": ErrorResponseModel},
-            HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponseModel},
-        })
-        async def run_provider_agent(
-            provider: str,
-            request: AgentRequest,
-            credentials: Annotated[HTTPAuthorizationCredentials, Depends(Api.security)] = None
-        ):
-            """Run a LangChain agent with a specific provider"""
-            if not AGENT_AVAILABLE:
-                return ErrorResponse.from_message("Agent API is not available", HTTP_503_SERVICE_UNAVAILABLE)
-            if request.config is None:
-                request.config = AgentConfig()
-            request.config.provider = provider
-            return await run_agent(request, credentials)
-
-        @self.app.post("/v1/agent/memory", responses={
-            HTTP_200_OK: {"model": AgentMemoryResponse},
-            HTTP_401_UNAUTHORIZED: {"model": ErrorResponseModel},
-            HTTP_404_NOT_FOUND: {"model": ErrorResponseModel},
-            HTTP_500_INTERNAL_SERVER_ERROR: {"model": ErrorResponseModel},
-            HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponseModel},
-        })
-        async def manage_agent_memory(
-            request: AgentMemoryRequest,
-            credentials: Annotated[HTTPAuthorizationCredentials, Depends(Api.security)] = None
-        ):
-            """Manage agent memory operations"""
-            if not AGENT_AVAILABLE:
-                return ErrorResponse.from_message("Agent API is not available", HTTP_503_SERVICE_UNAVAILABLE)
-            try:
-                if request.action == "get":
-                    memory = agent_manager.get_memory(request.conversation_id)
-                    if memory:
-                        memory_content = memory.chat_memory.messages if hasattr(memory, 'chat_memory') else []
-                        return AgentMemoryResponse(
-                            conversation_id=request.conversation_id,
-                            action=request.action,
-                            success=True,
-                            message="Memory retrieved successfully",
-                            memory_content=[{"role": msg.type, "content": msg.content} for msg in memory_content]
-                        )
-                    else:
-                        return AgentMemoryResponse(
-                            conversation_id=request.conversation_id,
-                            action=request.action,
-                            success=False,
-                            message="No memory found for this conversation"
-                        )
-                
-                elif request.action == "clear":
-                    success = agent_manager.clear_memory(request.conversation_id)
-                    return AgentMemoryResponse(
-                        conversation_id=request.conversation_id,
-                        action=request.action,
-                        success=success,
-                        message="Memory cleared successfully" if success else "No memory found to clear"
-                    )
-                
-                elif request.action == "add":
-                    if request.input and request.output:
-                        success = agent_manager.add_to_memory(request.conversation_id, request.input, request.output)
-                        return AgentMemoryResponse(
-                            conversation_id=request.conversation_id,
-                            action=request.action,
-                            success=success,
-                            message="Memory updated successfully" if success else "Failed to update memory"
-                        )
-                    else:
-                        return AgentMemoryResponse(
-                            conversation_id=request.conversation_id,
-                            action=request.action,
-                            success=False,
-                            message="Both input and output are required for add action"
-                        )
-                
-                else:
-                    return AgentMemoryResponse(
-                        conversation_id=request.conversation_id,
-                        action=request.action,
-                        success=False,
-                        message=f"Unsupported action: {request.action}"
-                    )
-                    
-            except Exception as e:
-                logger.exception(e)
-                return ErrorResponse.from_exception(e, None, HTTP_500_INTERNAL_SERVER_ERROR)
-
         @self.app.post("/json/{filename}")
         async def get_json(filename, request: Request):
             await asyncio.sleep(30)
@@ -983,6 +810,61 @@ class Api:
         })
         async def get_media_thumbnail(filename: str, request: Request):
             return await get_media(filename, request, True)
+
+        @self.app.post("/v1/agent")
+        async def agent_endpoint(request: Request):
+            """
+            Run a LangChain agent with a single tool that uses g4f.client.Client for text generation.
+            """
+            try:
+                # Parse the request body
+                body = await request.json()
+                question = body.get("question")
+                if not question:
+                    return ErrorResponse.from_message("Missing 'question' field in request body", HTTP_422_UNPROCESSABLE_ENTITY)
+                
+                # Define a simple calculator tool
+                def calc_tool_func(expression: str) -> str:
+                    try:
+                        # Only allow safe characters
+                        allowed = set("0123456789+-*/(). ")
+                        if not set(expression) <= allowed:
+                            return "Invalid characters in expression."
+                        result = eval(expression, {"__builtins__": {}})
+                        return str(result)
+                    except Exception as e:
+                        return f"Error: {e}"
+
+                calc_tool = Tool(
+                    name="calculator",
+                    func=calc_tool_func,
+                    description="Evaluate basic math expressions."
+                )
+
+                # Define a simple tool that uses g4f.client.Client
+                def g4f_tool_func(input_text: str) -> str:
+                    client = Client()
+                    response = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": input_text}],
+                        web_search=False
+                    )
+                    return response.choices[0].message.content
+
+                g4f_tool = Tool(
+                    name="g4f_text_generator",
+                    func=g4f_tool_func,
+                    description="Generate text using g4f client."
+                )
+
+                from g4f.integration.langchain import ChatAI
+                llm = ChatAI(model="gpt-4o")
+                agent = initialize_agent([g4f_tool, calc_tool], llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False)
+                result = agent.run(question)
+                return {"answer": result}
+            except Exception as e:
+                logger.exception(f"Error in agent endpoint: {e}")
+                return ErrorResponse.from_message(f"Agent error: {str(e)}", HTTP_500_INTERNAL_SERVER_ERROR)
 
 def format_exception(e: Union[Exception, str], config: Union[ChatCompletionsConfig, ImageGenerationConfig] = None, image: bool = False) -> str:
     last_provider = {} if not image else g4f.get_last_provider(True)
