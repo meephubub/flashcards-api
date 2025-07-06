@@ -22,3 +22,9 @@ python-multipart
 markitdown[all]
 a2wsgi
 httpx
+
+langchain==0.3.26
+langchain-community
+langchain-core
+langchain-openai
+langchain-experimental

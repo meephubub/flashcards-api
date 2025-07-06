@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  flashcards-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flashcards-api
+    ports:
+      - "1337:1337"
+    environment:
+      # API Configuration
+      - G4F_MODEL=${G4F_MODEL:-gpt-4o}
+      - G4F_PROVIDER=${G4F_PROVIDER:-openai}
+      - G4F_MEDIA_PROVIDER=${G4F_MEDIA_PROVIDER:-openai}
+      - G4F_PROXY=${G4F_PROXY:-}
+      
+      # Server Configuration
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      
+      # Optional: Enable debug mode
+      - DEBUG=${DEBUG:-false}
+      
+      # Optional: Enable GUI mode
+      - GUI=${GUI:-false}
+      
+      # Optional: Enable demo mode
+      - DEMO=${DEMO:-false}
+      
+      # Optional: Request timeout
+      - TIMEOUT=${TIMEOUT:-600}
+      
+      # Optional: Ignore cookie files
+      - IGNORE_COOKIES=${IGNORE_COOKIES:-false}
+      
+      # Optional: Ignored providers (comma-separated)
+      - IGNORED_PROVIDERS=${IGNORED_PROVIDERS:-}
+    
+    volumes:
+      # Persistent data storage
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./cookies:/app/cookies
+      - ./media:/app/media
+      
+      # Optional: Mount custom configuration
+      - ./config:/app/config:ro
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1337/v1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    networks:
+      - flashcards-network
+    
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Optional: Redis for caching (if needed)
+  redis:
+    image: redis:7-alpine
+    container_name: flashcards-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - flashcards-network
+    profiles:
+      - cache
+
+  # Optional: Nginx reverse proxy (if needed)
+  nginx:
+    image: nginx:alpine
+    container_name: flashcards-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - flashcards-api
+    restart: unless-stopped
+    networks:
+      - flashcards-network
+    profiles:
+      - proxy
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  flashcards-network:
+    driver: bridge 
