@@ -823,6 +823,9 @@ class Api:
                 if not question:
                     return ErrorResponse.from_message("Missing 'question' field in request body", HTTP_422_UNPROCESSABLE_ENTITY)
                 
+                import datetime
+                import random
+
                 # Define a simple calculator tool
                 def calc_tool_func(expression: str) -> str:
                     try:
@@ -857,9 +860,97 @@ class Api:
                     description="Generate text using g4f client."
                 )
 
+                # Datetime tool
+                def datetime_tool(_: str = "") -> str:
+                    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                datetime_tool_obj = Tool(
+                    name="datetime_tool",
+                    func=datetime_tool,
+                    description="Returns the current date and time."
+                )
+
+                # String length tool
+                def strlen_tool(s: str) -> str:
+                    return str(len(s))
+
+                strlen_tool_obj = Tool(
+                    name="strlen_tool",
+                    func=strlen_tool,
+                    description="Returns the length of a string."
+                )
+
+                # Unit conversion tool (supports meters<->feet, celsius<->fahrenheit)
+                def unit_convert_tool(query: str) -> str:
+                    try:
+                        q = query.lower().strip()
+                        if "meters to feet" in q:
+                            val = float(q.split()[0])
+                            return str(val * 3.28084)
+                        elif "feet to meters" in q:
+                            val = float(q.split()[0])
+                            return str(val / 3.28084)
+                        elif "celsius to fahrenheit" in q:
+                            val = float(q.split()[0])
+                            return str(val * 9/5 + 32)
+                        elif "fahrenheit to celsius" in q:
+                            val = float(q.split()[0])
+                            return str((val - 32) * 5/9)
+                        else:
+                            return "Supported: '<number> meters to feet', '<number> feet to meters', '<number> celsius to fahrenheit', '<number> fahrenheit to celsius'"
+                    except Exception as e:
+                        return f"Error: {e}"
+
+                unit_convert_tool_obj = Tool(
+                    name="unit_convert_tool",
+                    func=unit_convert_tool,
+                    description="Convert between meters/feet and celsius/fahrenheit."
+                )
+
+                # Random number tool
+                def random_tool(query: str) -> str:
+                    try:
+                        parts = query.split()
+                        if len(parts) == 2:
+                            low, high = int(parts[0]), int(parts[1])
+                            return str(random.randint(low, high))
+                        else:
+                            return "Usage: '<low> <high>'"
+                    except Exception as e:
+                        return f"Error: {e}"
+
+                random_tool_obj = Tool(
+                    name="random_tool",
+                    func=random_tool,
+                    description="Returns a random integer in the given range. Usage: '<low> <high>'"
+                )
+
                 from g4f.integration.langchain import ChatAI
-                llm = ChatAI(model="gpt-4o")
-                agent = initialize_agent([g4f_tool, calc_tool], llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False)
+                llm = ChatAI(model="gpt-4")
+                from g4f.tools.web_search import get_search_message
+
+                # Web search tool
+                def web_search_tool(query: str) -> str:
+                    try:
+                        return get_search_message(query)
+                    except Exception as e:
+                        return f"Web search error: {e}"
+
+                web_search_tool_obj = Tool(
+                    name="web_search",
+                    func=web_search_tool,
+                    description="Performs a web search and returns summarized results."
+                )
+
+                agent = initialize_agent([
+                    g4f_tool,
+                    calc_tool,
+                    datetime_tool_obj,
+                    strlen_tool_obj,
+                    unit_convert_tool_obj,
+                    random_tool_obj,
+                    web_search_tool_obj
+                ], llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False, handle_parsing_errors=True)
                 result = agent.run(question)
                 return {"answer": result}
             except Exception as e:

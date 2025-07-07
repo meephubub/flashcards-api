@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     xdg-utils \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Google Chrome repository and install Chrome
@@ -74,6 +75,7 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     xdg-utils \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Google Chrome repository and install Chrome
@@ -107,4 +109,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:1337/v1 || exit 1
 
 # Default command
-CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "1337"] 
+CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "1337"]
