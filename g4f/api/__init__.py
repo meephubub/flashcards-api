@@ -74,6 +74,7 @@ from g4f.providers.response import AudioResponse
 from g4f.providers.any_provider import AnyProvider
 from g4f import Provider
 from g4f.gui import get_gui_app
+from g4f.gui.server.website import router as website_router
 from .stubs import (
     ChatCompletionsConfig, ImageGenerationConfig,
     ProviderResponseModel, ModelResponseModel,
@@ -124,6 +125,7 @@ def create_app():
     api.register_routes()
     api.register_authorization()
     api.register_validation_exception_handler()
+    app.include_router(website_router)
 
     if AppConfig.gui:
         if not has_a2wsgi:
@@ -823,11 +825,14 @@ class Api:
                 # Parse the request body
                 body = await request.json()
                 question = body.get("question")
+                verbose = body.get("verbose", False)
                 if not question:
                     return ErrorResponse.from_message("Missing 'question' field in request body", HTTP_422_UNPROCESSABLE_ENTITY)
                 
                 import datetime
                 import random
+                from fastapi.responses import StreamingResponse
+                import asyncio
 
                 # Define a simple calculator tool
                 def calc_tool_func(expression: str) -> str:
@@ -847,15 +852,30 @@ class Api:
                     description="Evaluate basic math expressions."
                 )
 
-                # Define a simple tool that uses g4f.client.Client
+                # Define a simple tool that uses https://text.pollinations.ai/openai
                 def g4f_tool_func(input_text: str) -> str:
-                    client = Client()
-                    response = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{"role": "user", "content": input_text}],
-                        web_search=False
-                    )
-                    return response.choices[0].message.content
+                    # Prepare the payload for Pollinations API
+                    payload = {
+                        "model": "gpt-4o",  # or another supported model if needed
+                        "messages": [{"role": "user", "content": input_text}],
+                        "stream": False
+                    }
+                    try:
+                        response = httpx.post(
+                            "https://text.pollinations.ai/openai",
+                            json=payload,
+                            headers={"Content-Type": "application/json", "referer": "https://pollinations.ai/"},
+                            timeout=30
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        # Extract the generated text from the response
+                        if "choices" in data and data["choices"]:
+                            return data["choices"][0]["message"]["content"]
+                        else:
+                            return "No response from Pollinations API."
+                    except Exception as e:
+                        return f"Pollinations API error: {e}"
 
                 g4f_tool = Tool(
                     name="g4f_text_generator",
@@ -945,19 +965,364 @@ class Api:
                     description="Performs a web search and returns summarized results."
                 )
 
-                agent = initialize_agent([
+                # Image generation tool using Pollinations AI, returns the image URL with a unique marker
+                def image_gen_tool(prompt: str) -> str:
+                    import httpx
+                    import time
+                    import random
+                    base_url = "https://image.pollinations.ai/prompt/"
+                    params = {
+                        'width': '1024',
+                        'height': '1024',
+                        'model': 'flux-pro',
+                        'nologo': 'true',
+                        'private': 'false',
+                        'enhance': 'false',
+                        'safe': 'false',
+                        'seed': str(random.randint(0, 2**32 - 1)),
+                    }
+                    query = "&".join(f"{k}={v}" for k, v in params.items())
+                    url = f"{base_url}{prompt.replace(' ', '%20')}?{query}"
+                    timeout = 40  # seconds
+                    interval = 1  # seconds
+                    elapsed = 0
+                    while elapsed < timeout:
+                        try:
+                            response = httpx.get(url)
+                            if response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"):
+                                return f"POLLINATIONS_IMAGE_URL: {url}"
+                        except Exception:
+                            pass
+                        time.sleep(interval)
+                        elapsed += interval
+                    return f"POLLINATIONS_IMAGE_URL: {url}"
+
+                image_gen_tool_obj = Tool(
+                    name="image_gen_tool",
+                    func=image_gen_tool,
+                    description="Generate an image using Pollinations AI and return a markdown image URL."
+                )
+
+                agent_tools = [
                     g4f_tool,
                     calc_tool,
                     datetime_tool_obj,
                     strlen_tool_obj,
                     unit_convert_tool_obj,
                     random_tool_obj,
-                    web_search_tool_obj
-                ], llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False, handle_parsing_errors=True)
-                result = agent.run(question)
-                return {"answer": result}
+                    web_search_tool_obj,
+                    image_gen_tool_obj
+                ]
+
+                if verbose:
+                    from langchain.callbacks.base import BaseCallbackHandler
+                    import json
+                    class SSECallbackHandler(BaseCallbackHandler):
+                        def __init__(self, queue):
+                            self.queue = queue
+                        async def on_chain_start(self, serialized, inputs, **kwargs):
+                            await self.queue.put(json.dumps({"event": "chain_start", "inputs": inputs}))
+                        async def on_tool_start(self, serialized, input_str, **kwargs):
+                            await self.queue.put(json.dumps({"event": "tool_start", "input": input_str}))
+                        async def on_tool_end(self, output, **kwargs):
+                            await self.queue.put(json.dumps({"event": "tool_end", "output": output}))
+                        async def on_text(self, text, **kwargs):
+                            await self.queue.put(json.dumps({"event": "text", "text": text}))
+                        async def on_chain_end(self, outputs, **kwargs):
+                            await self.queue.put(json.dumps({"event": "chain_end", "outputs": outputs}))
+                        async def on_agent_action(self, action, **kwargs):
+                            await self.queue.put(json.dumps({"event": "agent_action", "log": action.log}))
+                        async def on_agent_finish(self, finish, **kwargs):
+                            await self.queue.put(json.dumps({"event": "agent_finish", "log": finish.log}))
+
+                    queue = asyncio.Queue()
+                    handler = SSECallbackHandler(queue)
+                    agent = initialize_agent(
+                        agent_tools,
+                        llm,
+                        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                        verbose=True,
+                        handle_parsing_errors=True,
+                        callbacks=[handler]
+                    )
+                    async def event_generator():
+                        task = asyncio.create_task(asyncio.to_thread(agent.run, question))
+                        while True:
+                            try:
+                                msg = await asyncio.wait_for(queue.get(), timeout=0.1)
+                                yield f"data: {msg}\n\n"
+                            except asyncio.TimeoutError:
+                                if task.done():
+                                    break
+                        # Final answer
+                        if task.done():
+                            result = task.result()
+                            yield f"data: {json.dumps({'event': 'final', 'result': result})}\n\n"
+                    return StreamingResponse(event_generator(), media_type="text/event-stream")
+                else:
+                    agent = initialize_agent(
+                        agent_tools,
+                        llm,
+                        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                        verbose=False,
+                        handle_parsing_errors=True
+                    )
+                    result = agent.run(question)
+                    return {"answer": result}
             except Exception as e:
                 logger.exception(f"Error in agent endpoint: {e}")
+                return ErrorResponse.from_message(f"Agent error: {str(e)}", HTTP_500_INTERNAL_SERVER_ERROR)
+
+        @self.app.get("/v1/agent/stream")
+        async def agent_stream_endpoint(request: Request):
+            try:
+                import datetime
+                import random
+                from fastapi.responses import StreamingResponse
+                import asyncio
+                question = request.query_params.get("question")
+                if not question:
+                    return ErrorResponse.from_message("Missing 'question' query parameter", HTTP_422_UNPROCESSABLE_ENTITY)
+                
+                # Define a simple calculator tool
+                def calc_tool_func(expression: str) -> str:
+                    try:
+                        # Only allow safe characters
+                        allowed = set("0123456789+-*/(). ")
+                        if not set(expression) <= allowed:
+                            return "Invalid characters in expression."
+                        result = eval(expression, {"__builtins__": {}})
+                        return str(result)
+                    except Exception as e:
+                        return f"Error: {e}"
+
+                calc_tool = Tool(
+                    name="calculator",
+                    func=calc_tool_func,
+                    description="Evaluate basic math expressions."
+                )
+
+                # Define a simple tool that uses https://text.pollinations.ai/openai
+                def g4f_tool_func(input_text: str) -> str:
+                    # Prepare the payload for Pollinations API
+                    payload = {
+                        "model": "gpt-4o",  # or another supported model if needed
+                        "messages": [{"role": "user", "content": input_text}],
+                        "stream": False
+                    }
+                    try:
+                        response = httpx.post(
+                            "https://text.pollinations.ai/openai",
+                            json=payload,
+                            headers={"Content-Type": "application/json", "referer": "https://pollinations.ai/"},
+                            timeout=30
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        # Extract the generated text from the response
+                        if "choices" in data and data["choices"]:
+                            return data["choices"][0]["message"]["content"]
+                        else:
+                            return "No response from Pollinations API."
+                    except Exception as e:
+                        return f"Pollinations API error: {e}"
+
+                g4f_tool = Tool(
+                    name="g4f_text_generator",
+                    func=g4f_tool_func,
+                    description="Generate text using g4f client."
+                )
+
+                # Datetime tool
+                def datetime_tool(_: str = "") -> str:
+                    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                datetime_tool_obj = Tool(
+                    name="datetime_tool",
+                    func=datetime_tool,
+                    description="Returns the current date and time."
+                )
+
+                # String length tool
+                def strlen_tool(s: str) -> str:
+                    return str(len(s))
+
+                strlen_tool_obj = Tool(
+                    name="strlen_tool",
+                    func=strlen_tool,
+                    description="Returns the length of a string."
+                )
+
+                # Unit conversion tool (supports meters<->feet, celsius<->fahrenheit)
+                def unit_convert_tool(query: str) -> str:
+                    try:
+                        q = query.lower().strip()
+                        if "meters to feet" in q:
+                            val = float(q.split()[0])
+                            return str(val * 3.28084)
+                        elif "feet to meters" in q:
+                            val = float(q.split()[0])
+                            return str(val / 3.28084)
+                        elif "celsius to fahrenheit" in q:
+                            val = float(q.split()[0])
+                            return str(val * 9/5 + 32)
+                        elif "fahrenheit to celsius" in q:
+                            val = float(q.split()[0])
+                            return str((val - 32) * 5/9)
+                        else:
+                            return "Supported: '<number> meters to feet', '<number> feet to meters', '<number> celsius to fahrenheit', '<number> fahrenheit to celsius'"
+                    except Exception as e:
+                        return f"Error: {e}"
+
+                unit_convert_tool_obj = Tool(
+                    name="unit_convert_tool",
+                    func=unit_convert_tool,
+                    description="Convert between meters/feet and celsius/fahrenheit."
+                )
+
+                # Random number tool
+                def random_tool(query: str) -> str:
+                    try:
+                        parts = query.split()
+                        if len(parts) == 2:
+                            low, high = int(parts[0]), int(parts[1])
+                            return str(random.randint(low, high))
+                        else:
+                            return "Usage: '<low> <high>'"
+                    except Exception as e:
+                        return f"Error: {e}"
+
+                random_tool_obj = Tool(
+                    name="random_tool",
+                    func=random_tool,
+                    description="Returns a random integer in the given range. Usage: '<low> <high>'"
+                )
+
+                from g4f.integration.langchain import ChatAI
+                llm = ChatAI(model="gpt-4")
+                from g4f.tools.web_search import get_search_message
+
+                # Web search tool
+                def web_search_tool(query: str) -> str:
+                    try:
+                        return get_search_message(query)
+                    except Exception as e:
+                        return f"Web search error: {e}"
+
+                web_search_tool_obj = Tool(
+                    name="web_search",
+                    func=web_search_tool,
+                    description="Performs a web search and returns summarized results."
+                )
+
+                # Image generation tool using Pollinations AI, returns the image URL with a unique marker
+                def image_gen_tool(prompt: str) -> str:
+                    import httpx
+                    import time
+                    import random
+                    base_url = "https://image.pollinations.ai/prompt/"
+                    params = {
+                        'width': '1024',
+                        'height': '1024',
+                        'model': 'flux-pro',
+                        'nologo': 'true',
+                        'private': 'false',
+                        'enhance': 'false',
+                        'safe': 'false',
+                        'seed': str(random.randint(0, 2**32 - 1)),
+                    }
+                    query = "&".join(f"{k}={v}" for k, v in params.items())
+                    url = f"{base_url}{prompt.replace(' ', '%20')}?{query}"
+                    timeout = 40  # seconds
+                    interval = 1  # seconds
+                    elapsed = 0
+                    while elapsed < timeout:
+                        try:
+                            response = httpx.get(url)
+                            if response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"):
+                                return f"POLLINATIONS_IMAGE_URL: {url}"
+                        except Exception:
+                            pass
+                        time.sleep(interval)
+                        elapsed += interval
+                    return f"POLLINATIONS_IMAGE_URL: {url}"
+
+                image_gen_tool_obj = Tool(
+                    name="image_gen_tool",
+                    func=image_gen_tool,
+                    description="Generate an image using Pollinations AI and return a markdown image URL."
+                )
+
+                agent_tools = [
+                    g4f_tool,
+                    calc_tool,
+                    datetime_tool_obj,
+                    strlen_tool_obj,
+                    unit_convert_tool_obj,
+                    random_tool_obj,
+                    web_search_tool_obj,
+                    image_gen_tool_obj
+                ]
+
+                system_prompt = (
+                    "You are an AI assistant with access to the following tools:\n"
+                    "- calculator: Evaluate basic math expressions.\n"
+                    "- datetime_tool: Returns the current date and time.\n"
+                    "- strlen_tool: Returns the length of a string.\n"
+                    "- unit_convert_tool: Convert between meters/feet and celsius/fahrenheit.\n"
+                    "- random_tool: Returns a random integer in the given range.\n"
+                    "- web_search: Performs a web search and returns summarized results.\n"
+                    "- image_gen_tool: Generate an image using Pollinations AI and return a markdown image URL.\n"
+                    "When you use the image_gen_tool, always use the exact URL returned by the tool (after 'POLLINATIONS_IMAGE_URL:') as the image URL in your answer. Do not guess or modify the URL. Wait for the tool's output before proceeding.\n"
+                    "Use these tools to answer questions when appropriate. When answering, only provide a Final Answer after all necessary tool actions and observations. Do not include both a tool action and a final answer in the same response."
+                )
+                llm = ChatAI(model="gpt-4o", system_prompt=system_prompt)
+
+                from langchain.callbacks.base import BaseCallbackHandler
+                import json
+                class SSECallbackHandler(BaseCallbackHandler):
+                    def __init__(self, queue):
+                        self.queue = queue
+                    async def on_chain_start(self, serialized, inputs, **kwargs):
+                        await self.queue.put(json.dumps({"event": "chain_start", "inputs": inputs}))
+                    async def on_tool_start(self, serialized, input_str, **kwargs):
+                        await self.queue.put(json.dumps({"event": "tool_start", "input": input_str}))
+                    async def on_tool_end(self, output, **kwargs):
+                        await self.queue.put(json.dumps({"event": "tool_end", "output": output}))
+                    async def on_text(self, text, **kwargs):
+                        await self.queue.put(json.dumps({"event": "text", "text": text}))
+                    async def on_chain_end(self, outputs, **kwargs):
+                        await self.queue.put(json.dumps({"event": "chain_end", "outputs": outputs}))
+                    async def on_agent_action(self, action, **kwargs):
+                        await self.queue.put(json.dumps({"event": "agent_action", "log": action.log}))
+                    async def on_agent_finish(self, finish, **kwargs):
+                        await self.queue.put(json.dumps({"event": "agent_finish", "log": finish.log}))
+                queue = asyncio.Queue()
+                handler = SSECallbackHandler(queue)
+                agent = initialize_agent(
+                    agent_tools,
+                    llm,
+                    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                    verbose=True,
+                    handle_parsing_errors=True,
+                    callbacks=[handler]
+                )
+                async def event_generator():
+                    task = asyncio.create_task(asyncio.to_thread(agent.run, question))
+                    while True:
+                        try:
+                            msg = await asyncio.wait_for(queue.get(), timeout=0.1)
+                            yield f"data: {msg}\n\n"
+                        except asyncio.TimeoutError:
+                            if task.done():
+                                break
+                    # Final answer
+                    if task.done():
+                        result = task.result()
+                        yield f"data: {json.dumps({'event': 'final', 'result': result})}\n\n"
+                return StreamingResponse(event_generator(), media_type="text/event-stream")
+            except Exception as e:
+                logger.exception(f"Error in agent stream endpoint: {e}")
                 return ErrorResponse.from_message(f"Agent error: {str(e)}", HTTP_500_INTERNAL_SERVER_ERROR)
 
 def format_exception(e: Union[Exception, str], config: Union[ChatCompletionsConfig, ImageGenerationConfig] = None, image: bool = False) -> str:

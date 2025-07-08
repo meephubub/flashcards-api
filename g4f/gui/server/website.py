@@ -4,6 +4,8 @@ import os
 import requests
 from datetime import datetime
 from flask import send_from_directory, redirect, request
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
 
 from ...image.copy_images import secure_filename
 from ...cookies import get_cookies_dir
@@ -101,3 +103,75 @@ class Website:
 
     def _dist(self, name: str):
         return send_from_directory(os.path.abspath(DIST_DIR), name)
+
+router = APIRouter()
+
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    html_content = '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Agent Chat (Verbose)</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 2em; }
+            #log { border: 1px solid #ccc; padding: 1em; height: 300px; overflow-y: auto; background: #f9f9f9; }
+            #question { width: 80%; }
+            #send { padding: 0.5em 1em; }
+        </style>
+    </head>
+    <body>
+        <h2>Agent Chat (Verbose Mode)</h2>
+        <div>
+            <input type="text" id="question" placeholder="Ask a question..." />
+            <button id="send">Send</button>
+        </div>
+        <div id="log"></div>
+        <script>
+            const log = document.getElementById('log');
+            const sendBtn = document.getElementById('send');
+            const questionInput = document.getElementById('question');
+            function appendLog(msg) {
+                log.innerHTML += msg + '<br>';
+                log.scrollTop = log.scrollHeight;
+            }
+            sendBtn.onclick = function() {
+                log.innerHTML = '';
+                const question = questionInput.value;
+                if (!question) return;
+                const evtSource = new EventSource('/v1/agent/stream?question=' + encodeURIComponent(question));
+                evtSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.event === 'final') {
+                            appendLog('<b>Final Answer:</b> ' + data.result);
+                        } else if (data.event === 'agent_action') {
+                            appendLog('<pre style="color: #444; background: #eee; padding: 0.5em;">' + data.log + '</pre>');
+                        } else if (data.event === 'agent_finish') {
+                            appendLog('<b>Final Reasoning:</b><br><pre style="color: #444; background: #eee; padding: 0.5em;">' + data.log + '</pre>');
+                        } else if (data.event === 'tool_start') {
+                            appendLog('<i>Tool Start:</i> ' + data.input);
+                        } else if (data.event === 'tool_end') {
+                            appendLog('<i>Tool End:</i> ' + data.output);
+                        } else if (data.event === 'text') {
+                            appendLog('<i>Text:</i> ' + data.text);
+                        } else if (data.event === 'chain_start') {
+                            appendLog('<i>Chain Start</i>');
+                        } else if (data.event === 'chain_end') {
+                            appendLog('<i>Chain End</i>');
+                        }
+                    } catch (e) {
+                        appendLog('Error parsing event: ' + event.data);
+                    }
+                };
+                evtSource.onerror = function() {
+                    appendLog('<span style="color:red">Stream error or closed.</span>');
+                    evtSource.close();
+                };
+            };
+        </script>
+    </body>
+    </html>
+    '''
+    return HTMLResponse(content=html_content)
