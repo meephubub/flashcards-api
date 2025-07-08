@@ -535,8 +535,11 @@ class Api:
                         image_bytes = response.content
                         config['image'] = image_bytes
                 
+                provider_kwargs = config.dict(exclude_none=True)
+                if getattr(config, 'reference_image', None):
+                    provider_kwargs["media"] = [[config.reference_image, "reference.png"]]
                 response = await self.client.images.generate(
-                    **kwargs,
+                    **provider_kwargs,
                 )
                 for image in response.data:
                     if hasattr(image, "url") and image.url.startswith("/"):
